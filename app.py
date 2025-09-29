@@ -142,7 +142,7 @@ def do_totp_guard():
         totp = pyotp.TOTP(TOTP_SHARED_SECRET)
         if totp.verify(code, valid_window=1):
             st.session_state["totp_ok"] = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Code invalide.")
     st.stop()
@@ -152,7 +152,7 @@ def secure_gate():
     with st.sidebar:
         if st.button("Se déconnecter"):
             st.session_state.clear()
-            st.experimental_rerun()
+            st.rerun()
 
     # Si OAuth configuré → SSO Google + TOTP
     if oauth_configured():
