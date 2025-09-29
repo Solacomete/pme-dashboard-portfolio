@@ -8,6 +8,143 @@ from datetime import datetime
 
 st.set_page_config(page_title="PME Dashboard – Démo", page_icon="📊", layout="wide")
 
+# ========= Auth forte (Google SSO + TOTP) avec fallback mot de passe =========
+import requests
+from authlib.integrations.requests_client import OAuth2Session
+import pyotp, qrcode
+from io import BytesIO
+
+def secret_get(key, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+# SECRETS / CONFIG
+GOOGLE_CLIENT_ID = secret_get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = secret_get("GOOGLE_CLIENT_SECRET")
+OAUTH_REDIRECT_URI = secret_get("OAUTH_REDIRECT_URI")  # ex: https://tonapp.streamlit.app
+ALLOWED_EMAILS = [e.strip().lower() for e in str(secret_get("ALLOWED_EMAILS","")).split(",") if e.strip()]
+TOTP_ENABLED = str(secret_get("TOTP_ENABLED","false")).lower()=="true"
+TOTP_SHARED_SECRET = secret_get("TOTP_SHARED_SECRET")  # ex: JBSWY3DPEHPK3PXP
+APP_PASSWORD = secret_get("APP_PASSWORD")  # fallback
+
+def oauth_configured():
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and OAUTH_REDIRECT_URI)
+
+def require_password_fallback():
+    """Fallback si OAuth non configuré : exige APP_PASSWORD."""
+    if not APP_PASSWORD:
+        st.error("Sécurité non configurée (ni OAuth ni mot de passe). Ajoute au moins APP_PASSWORD dans les Secrets.")
+        st.stop()
+    with st.sidebar:
+        pwd = st.text_input("Mot de passe", type="password")
+        if st.button("Se connecter"):
+            st.session_state["_PW_OK"] = (pwd == APP_PASSWORD)
+    if not st.session_state.get("_PW_OK"):
+        st.stop()
+
+def do_google_login():
+    """SSO Google + liste blanche d'emails."""
+    if st.session_state.get("user_email"):
+        return
+    # Étape 1 : rediriger vers Google
+    if "code" not in st.query_params:
+        client = OAuth2Session(
+            GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+            scope="openid email profile",
+            redirect_uri=OAUTH_REDIRECT_URI
+        )
+        auth_url, state = client.create_authorization_url(
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            prompt="consent", access_type="offline", include_granted_scopes="true"
+        )
+        st.session_state["oauth_state"] = state
+        st.markdown("### Connexion requise")
+        st.link_button("Se connecter avec Google", auth_url, use_container_width=True)
+        st.stop()
+
+    # Étape 2 : retour Google → échange du code
+    if st.query_params.get("state") != st.session_state.get("oauth_state"):
+        st.error("State OAuth invalide. Rafraîchis la page.")
+        st.stop()
+
+    client = OAuth2Session(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, redirect_uri=OAUTH_REDIRECT_URI)
+    token = client.fetch_token("https://oauth2.googleapis.com/token", code=st.query_params["code"])
+
+    # Récupérer l'email
+    resp = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
+                        headers={"Authorization": f"Bearer {token['access_token']}"}, timeout=10)
+    userinfo = resp.json()
+    email = (userinfo or {}).get("email")
+    if not email:
+        st.error("Impossible de récupérer l'email Google.")
+        st.stop()
+
+    # Liste blanche
+    if ALLOWED_EMAILS and email.lower() not in ALLOWED_EMAILS:
+        st.error("Email non autorisé.")
+        st.stop()
+
+    st.session_state["user_email"] = email
+
+def do_totp_guard():
+    """2e facteur TOTP (Google Authenticator)."""
+    if not TOTP_ENABLED:
+        return
+    if st.session_state.get("totp_ok"):
+        return
+
+    st.markdown("### Vérification TOTP (2ᵉ facteur)")
+    if not TOTP_SHARED_SECRET:
+        st.error("TOTP activé mais TOTP_SHARED_SECRET manquant dans les Secrets.")
+        st.stop()
+
+    # QR une seule fois pour provisionner l’app Authenticator
+    if not st.session_state.get("totp_qr_shown"):
+        try:
+            totp = pyotp.TOTP(TOTP_SHARED_SECRET)
+            otpauth = totp.provisioning_uri(
+                name=st.session_state.get("user_email","user"),
+                issuer_name=secret_get("BUSINESS_NAME","PME Dashboard")
+            )
+            img = qrcode.make(otpauth)
+            buf = BytesIO(); img.save(buf, format="PNG")
+            st.image(buf.getvalue(), caption="Scanne ce QR dans Google Authenticator", width=200)
+            st.session_state["totp_qr_shown"] = True
+        except Exception:
+            pass
+
+    code = st.text_input("Code à 6 chiffres (Google Authenticator)", max_chars=6)
+    if st.button("Vérifier"):
+        totp = pyotp.TOTP(TOTP_SHARED_SECRET)
+        if totp.verify(code, valid_window=1):
+            st.session_state["totp_ok"] = True
+            st.experimental_rerun()
+        else:
+            st.error("Code invalide.")
+    st.stop()
+
+def secure_gate():
+    # Bouton déconnexion optionnel
+    with st.sidebar:
+        if st.button("Se déconnecter"):
+            st.session_state.clear()
+            st.experimental_rerun()
+
+    # Si OAuth configuré → SSO Google + TOTP
+    if oauth_configured():
+        do_google_login()
+        do_totp_guard()
+    else:
+        # Sinon → fallback mot de passe
+        require_password_fallback()
+
+# <<< APPEL PORTE SÉCURISÉE AVANT TOUT LE RESTE >>>
+secure_gate()
+# ============================================================================
+
+
 # -------------------
 # Helpers / Secrets
 # -------------------
