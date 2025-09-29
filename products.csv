@@ -1,0 +1,9 @@
+product_id,name,category,unit_price,cost_price,tax_rate,initial_stock,min_stock
+1,Baguette tradition,Boulangerie,1.2,0.35,0.055,800,120
+2,Pain complet,Boulangerie,2.2,0.7,0.055,500,80
+3,Croissant beurre,Viennoiserie,1.0,0.35,0.055,1000,150
+4,Pain au chocolat,Viennoiserie,1.1,0.4,0.055,950,150
+5,Tartelette citron,Pâtisserie,3.5,1.2,0.1,200,40
+6,Éclair chocolat,Pâtisserie,3.0,1.0,0.1,220,40
+7,Café,Boisson,1.4,0.25,0.1,2000,300
+8,Jus d'orange,Boisson,2.5,0.9,0.1,300,60
