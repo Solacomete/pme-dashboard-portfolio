@@ -45,9 +45,10 @@ def require_password_fallback():
         st.stop()
 
 def do_google_login():
-    """SSO Google + liste blanche d'emails."""
+    """SSO Google + liste blanche d'emails (robuste au state/refresh)."""
     if st.session_state.get("user_email"):
         return
+
     # Étape 1 : rediriger vers Google
     if "code" not in st.query_params:
         client = OAuth2Session(
@@ -64,21 +65,35 @@ def do_google_login():
         st.link_button("Se connecter avec Google", auth_url, use_container_width=True)
         st.stop()
 
-    # Étape 2 : retour Google → échange du code
-    if st.query_params.get("state") != st.session_state.get("oauth_state"):
-        st.error("State OAuth invalide. Rafraîchis la page.")
-        st.stop()
+    # Étape 2 : retour Google → échange du code (gestion state plus tolérante)
+    returned_state = st.query_params.get("state")
+    expected_state = st.session_state.get("oauth_state")
+
+    if isinstance(returned_state, list):
+        returned_state = returned_state[0]
+
+    if expected_state and returned_state != expected_state:
+        st.warning("Session expirée ou onglet différent. On relance l’auth.")
+        st.session_state.pop("oauth_state", None)
+        try:
+            st.query_params.clear()
+        except Exception:
+            st.experimental_set_query_params()
+        st.rerun()
 
     client = OAuth2Session(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, redirect_uri=OAUTH_REDIRECT_URI)
     token = client.fetch_token("https://oauth2.googleapis.com/token", code=st.query_params["code"])
 
     # Récupérer l'email
-    resp = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
-                        headers={"Authorization": f"Bearer {token['access_token']}"}, timeout=10)
+    resp = requests.get(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {token['access_token']}"},
+        timeout=10
+    )
     userinfo = resp.json()
     email = (userinfo or {}).get("email")
     if not email:
-        st.error("Impossible de récupérer l'email Google.")
+        st.error("Impossible de récupérer l'adresse email Google.")
         st.stop()
 
     # Liste blanche
@@ -87,6 +102,13 @@ def do_google_login():
         st.stop()
 
     st.session_state["user_email"] = email
+
+    # Nettoyer l’URL pour éviter de rejouer le callback au refresh
+    try:
+        st.query_params.clear()
+    except Exception:
+        st.experimental_set_query_params()
+
 
 def do_totp_guard():
     """2e facteur TOTP (Google Authenticator)."""
